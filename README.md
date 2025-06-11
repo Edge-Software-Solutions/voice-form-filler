@@ -47,6 +47,17 @@ wget https://dldata-public.s3.us-east-2.amazonaws.com/2086-149220-0033.wav
 mv 2086-149220-0033.wav file.wav
 cd ..
 ```
+
+## Downloading speaker diarization models
+
+```
+cd models
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+tar xvf sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+rm sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx
+cd ..
+```
 Finally execute the testing script as 
 
 ```
@@ -171,7 +182,7 @@ Linux: lsof -i :11434, then kill -9 <PID>.
 First the recognition server
 On Windows
 ```
-python .\asr_server.py --encoder .\models\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\encoder.int8.onnx --decoder .\models\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\decoder.int8.onnx  --joiner .\models\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\joiner.int8.onnx --tokens .\models\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\tokens.txt --port 8001
+python .\asr_server.py --encoder .\models\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\encoder.int8.onnx --decoder .\models\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\decoder.int8.onnx  --joiner .\models\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\joiner.int8.onnx --tokens .\models\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\tokens.txt --segmentation-model .\models\sherpa-onnx-pyannote-segmentation-3-0\model.onnx --embedding-model .\models\nemo_en_titanet_small.onnx --port 8001
 
 ```
 On linux
@@ -182,6 +193,8 @@ python ./asr_server.py \
   --decoder ./models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/decoder.int8.onnx \
   --joiner ./models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/joiner.int8.onnx \
   --tokens ./models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/tokens.txt \
+  --segmentation-model ./models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx \
+  --embedding-model ./models/nemo_en_titanet_small.onnx \
   --port 8001
 
 ```
