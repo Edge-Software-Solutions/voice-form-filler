@@ -18,6 +18,7 @@ import soundfile as sf
 import torch
 import time
 from pydub import AudioSegment  # For handling webm chunks
+import sherpa_onnx
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -29,6 +30,10 @@ def get_args():
     )
     parser.add_argument("--joiner", type=str, required=True, help="Path to joiner.onnx")
     parser.add_argument("--tokens", type=str, required=True, help="Path to tokens.txt")
+    parser.add_argument("--segmentation-model", type=str, required=True,
+                        help="Path to diarization segmentation model")
+    parser.add_argument("--embedding-model", type=str, required=True,
+                        help="Path to diarization embedding model")
     parser.add_argument("--port", type=int, default=8001, help="WebSocket server port")
     return parser.parse_args()
 
@@ -61,6 +66,30 @@ def display(sess, model):
     print(f"=========={model} Output==========")
     for i in sess.get_outputs():
         print(i)
+
+def init_speaker_diarization(segmentation_model: str, embedding_model: str):
+    seg_cfg = sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
+        pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
+            model=segmentation_model
+        ),
+        num_threads=1,
+        debug=False,
+        provider="cpu",
+    )
+    emb_cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+        model=embedding_model,
+        num_threads=1,
+        debug=False,
+        provider="cpu",
+    )
+    cluster_cfg = sherpa_onnx.FastClusteringConfig()
+    diarization_config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
+        segmentation=seg_cfg,
+        embedding=emb_cfg,
+        clustering=cluster_cfg,
+    )
+    diarization_config.validate()
+    return sherpa_onnx.OfflineSpeakerDiarization(diarization_config)
 
 class OnnxModel:
     def __init__(self, encoder: str, decoder: str, joiner: str):
@@ -154,7 +183,46 @@ class OnnxModel:
         )[0]
         return logit
 
-async def process_audio(websocket, model, id2token):
+def transcribe_segment(audio: np.ndarray, model: OnnxModel, id2token: dict) -> str:
+    fbank = create_fbank()
+    tail_padding = np.zeros(16000 * 2)
+    audio = np.concatenate([audio, tail_padding])
+
+    blank = len(id2token) - 1
+    ans = [blank]
+    state0, state1 = model.get_decoder_state()
+    decoder_out, state0_next, state1_next = model.run_decoder(ans[-1], state0, state1)
+
+    features = compute_features(audio, fbank)
+    if model.normalize_type != "":
+        assert model.normalize_type == "per_feature", model.normalize_type
+        features = torch.from_numpy(features)
+        mean = features.mean(dim=1, keepdims=True)
+        stddev = features.std(dim=1, keepdims=True) + 1e-5
+        features = (features - mean) / stddev
+        features = features.numpy()
+
+    encoder_out = model.run_encoder(features)
+    for t in range(encoder_out.shape[2]):
+        encoder_out_t = encoder_out[:, :, t : t + 1]
+        logits = model.run_joiner(encoder_out_t, decoder_out)
+        logits = torch.from_numpy(logits)
+        logits = logits.squeeze()
+        idx = torch.argmax(logits, dim=-1).item()
+        if idx != blank:
+            ans.append(idx)
+            state0 = state0_next
+            state1 = state1_next
+            decoder_out, state0_next, state1_next = model.run_decoder(
+                ans[-1], state0, state1
+            )
+
+    ans = ans[1:]
+    tokens = [id2token[i] for i in ans]
+    text = "".join(tokens).replace("▁", " ").strip()
+    return text
+
+async def process_audio(websocket, model, id2token, diarizer):
     audio_chunks = []
     tmp_file = None
     try:
@@ -187,63 +255,26 @@ async def process_audio(websocket, model, id2token):
                             audio_chunks = []
                             continue
 
-                        # Process the WAV file with ASR
-                        start = time.time()
-                        fbank = create_fbank()
+                        # Run diarization and ASR on each segment
                         audio, sample_rate = sf.read(wav_path, dtype="float32", always_2d=True)
-                        audio = audio[:, 0]  # Use first channel
-                        if sample_rate != 16000:
-                            audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=16000)
-                            sample_rate = 16000
+                        audio = audio[:, 0]
+                        if sample_rate != diarizer.sample_rate:
+                            audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=diarizer.sample_rate)
+                            sample_rate = diarizer.sample_rate
 
-                        tail_padding = np.zeros(sample_rate * 2)
-                        audio = np.concatenate([audio, tail_padding])
+                        result = diarizer.process(audio.tolist()).sort_by_start_time()
+                        for seg in result:
+                            start_idx = int(seg.start * sample_rate)
+                            end_idx = int(seg.end * sample_rate)
+                            segment_audio = audio[start_idx:end_idx]
+                            text = transcribe_segment(segment_audio, model, id2token)
+                            await websocket.send(json.dumps({
+                                "type": "segment",
+                                "speaker": seg.speaker,
+                                "text": text
+                            }))
 
-                        blank = len(id2token) - 1
-                        ans = [blank]
-                        state0, state1 = model.get_decoder_state()
-                        decoder_out, state0_next, state1_next = model.run_decoder(ans[-1], state0, state1)
-
-                        features = compute_features(audio, fbank)
-                        if model.normalize_type != "":
-                            assert model.normalize_type == "per_feature", model.normalize_type
-                            features = torch.from_numpy(features)
-                            mean = features.mean(dim=1, keepdims=True)
-                            stddev = features.std(dim=1, keepdims=True) + 1e-5
-                            features = (features - mean) / stddev
-                            features = features.numpy()
-
-                        encoder_out = model.run_encoder(features)
-                        for t in range(encoder_out.shape[2]):
-                            encoder_out_t = encoder_out[:, :, t : t + 1]
-                            logits = model.run_joiner(encoder_out_t, decoder_out)
-                            logits = torch.from_numpy(logits)
-                            logits = logits.squeeze()
-                            idx = torch.argmax(logits, dim=-1).item()
-                            if idx != blank:
-                                ans.append(idx)
-                                state0 = state0_next
-                                state1 = state1_next
-                                decoder_out, state0_next, state1_next = model.run_decoder(
-                                    ans[-1], state0, state1
-                                )
-
-                        end = time.time()
-                        elapsed_seconds = end - start
-                        audio_duration = audio.shape[0] / 16000
-                        real_time_factor = elapsed_seconds / audio_duration
-
-                        ans = ans[1:]  # Remove the first blank
-                        tokens = [id2token[i] for i in ans]
-                        underline = "▁"
-                        text = "".join(tokens).replace(underline, " ").strip()
-
-                        # Send transcription back to client
-                        await websocket.send(json.dumps({
-                            "type": "fullSentence",
-                            "text": text,
-                            "rtf": real_time_factor
-                        }))
+                        # Clear processed chunks
                         audio_chunks = []  # Clear chunks after processing
                         continue
 
@@ -276,8 +307,11 @@ async def main():
     assert Path(args.decoder).is_file(), args.decoder
     assert Path(args.joiner).is_file(), args.joiner
     assert Path(args.tokens).is_file(), args.tokens
+    assert Path(args.segmentation_model).is_file(), args.segmentation_model
+    assert Path(args.embedding_model).is_file(), args.embedding_model
 
     model = OnnxModel(args.encoder, args.decoder, args.joiner)
+    diarizer = init_speaker_diarization(args.segmentation_model, args.embedding_model)
     id2token = dict()
     with open(args.tokens, encoding="utf-8") as f:
         for line in f:
@@ -286,7 +320,7 @@ async def main():
 
     async def handler(websocket):
         try:
-            await process_audio(websocket, model, id2token)
+            await process_audio(websocket, model, id2token, diarizer)
         except websockets.exceptions.ConnectionClosed:
             print("Client disconnected")
         except Exception as e:
