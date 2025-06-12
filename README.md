@@ -167,23 +167,39 @@ Linux: lsof -i :11434, then kill -9 <PID>.
 
 # Execution
 
-
-First the recognition server
-On Windows
+## Start the streaming ASR server
 ```
-python .\asr_server.py --encoder .\models\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\encoder.int8.onnx --decoder .\models\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\decoder.int8.onnx  --joiner .\models\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\joiner.int8.onnx --tokens .\models\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\tokens.txt --port 8001
-
+python asr_server.py \
+  --encoder models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/encoder.int8.onnx \
+  --decoder models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/decoder.int8.onnx \
+  --joiner  models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/joiner.int8.onnx \
+  --tokens  models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/tokens.txt
 ```
-On linux
+The server listens on `ws://localhost:8001` and expects raw 16‑bit PCM audio
+at 16 kHz. Send a JSON `{"type": "stop"}` message when the audio stream
+is finished. The server replies with partial transcripts using
+`{"type": "realtime"}` and a final `{"type": "fullSentence"}` message.
 
-```
-python ./asr_server.py \
-  --encoder ./models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/encoder.int8.onnx \
-  --decoder ./models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/decoder.int8.onnx \
-  --joiner ./models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/joiner.int8.onnx \
-  --tokens ./models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/tokens.txt \
-  --port 8001
+### Streaming a WAV file from Python
+Use the following script to test the server by streaming a file:
+```python
+import asyncio, json, websockets, soundfile as sf, numpy as np
 
+async def main(path):
+    audio, sr = sf.read(path, dtype="int16")
+    assert sr == 16000
+    uri = "ws://localhost:8001"
+    async with websockets.connect(uri) as ws:
+        for chunk in np.array_split(audio, len(audio)//1600 or 1):
+            await ws.send(chunk.tobytes())
+            await asyncio.sleep(0.1)
+        await ws.send(json.dumps({"type": "stop"}))
+        async for msg in ws:
+            print(msg)
+            if json.loads(msg).get("type") == "fullSentence":
+                break
+
+asyncio.run(main("models/file.wav"))
 ```
 
 

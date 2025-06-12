@@ -20,3 +20,4 @@ sounddevice
 uvicorn
 fastapi
 pydub
+sherpa-onnx
