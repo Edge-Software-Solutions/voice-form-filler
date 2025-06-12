@@ -173,7 +173,8 @@ python asr_server.py \
   --encoder models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/encoder.int8.onnx \
   --decoder models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/decoder.int8.onnx \
   --joiner  models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/joiner.int8.onnx \
-  --tokens  models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/tokens.txt
+  --tokens  models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/tokens.txt \
+  --model-type nemo_transducer
 ```
 The server listens on `ws://localhost:8001` and expects raw 16‑bit PCM audio
 at 16 kHz. Send a JSON `{"type": "stop"}` message when the audio stream

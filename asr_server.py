@@ -15,6 +15,12 @@ def get_args():
     parser.add_argument("--decoder", required=True, help="Path to decoder.onnx")
     parser.add_argument("--joiner", required=True, help="Path to joiner.onnx")
     parser.add_argument("--tokens", required=True, help="Path to tokens.txt")
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        default="nemo_transducer",
+        help="Set to 'nemo_transducer' for NVIDIA Parakeet models",
+    )
     parser.add_argument("--port", type=int, default=8001, help="Port to listen on")
     return parser.parse_args()
 
@@ -32,6 +38,7 @@ def create_recognizer(args):
         sample_rate=16000,
         feature_dim=80,
         enable_endpoint_detection=False,
+        model_type=args.model_type,
     )
     return recognizer
 
